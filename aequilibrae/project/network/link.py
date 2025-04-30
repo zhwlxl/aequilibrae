@@ -56,13 +56,13 @@ class Link(SafeClass):
             conn.execute(f'DELETE FROM links where link_id="{self.link_id}"')
         self.__stil_exists = False
 
-    def save(self):
+    def save(self, conn=None):
         """Saves link to database"""
 
         data, sql = self._save_new_with_geometry() if self.__new else self.__save_existing_link()
 
         if data:
-            with self.project.db_connection as conn:
+            with conn or self.project.db_connection as conn:
                 conn.execute(sql, data)
 
         self.__new = False
