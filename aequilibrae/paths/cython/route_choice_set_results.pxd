@@ -41,12 +41,13 @@ cdef class RouteChoiceSetResults:
     cdef shared_ptr[vector[double]] __get_cost_set(RouteChoiceSetResults self, size_t i) noexcept nogil
     cdef shared_ptr[vector[bool]] __get_mask_set(RouteChoiceSetResults self, size_t i) noexcept nogil
     cdef shared_ptr[vector[double]] __get_path_overlap_set(RouteChoiceSetResults self, size_t i) noexcept nogil
-    cdef shared_ptr[vector[double]] __get_prob_set(RouteChoiceSetResults self, size_t i) noexcept nogil
+    cdef shared_ptr[vector[double]] get_prob_vec(RouteChoiceSetResults self, size_t i) noexcept nogil
 
     cdef shared_ptr[vector[double]] compute_result(
         RouteChoiceSetResults self,
         size_t i,
         RouteVec_t &route_set,
+        bint *found_zero_cost,
         size_t thread_id
     ) noexcept nogil
 
@@ -54,10 +55,11 @@ cdef class RouteChoiceSetResults:
         RouteChoiceSetResults self,
         vector[double] &cost_vec,
         const RouteVec_t &route_set,
-        const double[:] cost_view
+        const double[:] cost_view,
+        bint *found_zero_cost
     ) noexcept nogil
 
-    cdef bool compute_mask(
+    cdef void compute_mask(
         RouteChoiceSetResults self,
         vector[bool] &route_mask,
         const vector[double] &total_cost

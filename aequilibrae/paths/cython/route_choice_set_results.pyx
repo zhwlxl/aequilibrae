@@ -14,7 +14,6 @@ import logging
 import pyarrow as pa
 import pyarrow.parquet as pq
 import cython
-import warnings
 
 
 @cython.embedsignature(True)
@@ -115,13 +114,15 @@ cdef class RouteChoiceSetResults:
                 self.__prob_set[i] = make_shared[vector[double]]()
 
     def write(self, where):
+        table = self.make_table_from_results()
+
         logger = logging.getLogger("aequilibrae")
         pq.write_to_dataset(
-            self.table,
+            table,
             where,
             partitioning_flavor="hive",
             partitioning=["origin id"],
-            schema=self.psl_schema if self.perform_assignment else self.schema,
+            schema=table.schema,
             use_threads=True,
             existing_data_behavior="overwrite_or_ignore",
             file_visitor=lambda written_file: logger.info(f"Wrote partition dataset at {written_file.path}"),
@@ -130,7 +131,7 @@ cdef class RouteChoiceSetResults:
 
     @classmethod
     def read_dataset(cls, where):
-        return pa.dataset.dataset(where, format="parquet", partitioning=pa.dataset.HivePartitioning(cls.schema))
+        return pa.dataset.dataset(where, format="parquet", partitioning=pa.dataset.HivePartitioning(cls.psl_schema))
 
     @staticmethod
     cdef void route_set_to_route_vec(RouteVec_t &route_vec, RouteSet_t &route_set) noexcept nogil:
@@ -143,6 +144,9 @@ cdef class RouteChoiceSetResults:
         route_vec.reserve(route_set.size())
         for route in route_set:
             route_vec.emplace_back(route)
+
+        # We now drop all references to those raw pointers. The unique pointers now own those vectors.
+        route_set.clear()
 
     cdef shared_ptr[RouteVec_t] get_route_vec(RouteChoiceSetResults self, size_t i) noexcept nogil:
         """
@@ -169,13 +173,14 @@ cdef class RouteChoiceSetResults:
     cdef shared_ptr[vector[double]] __get_path_overlap_set(RouteChoiceSetResults self, size_t i) noexcept nogil:
         return self.__path_overlap_set[i] if self.store_results else make_shared[vector[double]]()
 
-    cdef shared_ptr[vector[double]] __get_prob_set(RouteChoiceSetResults self, size_t i) noexcept nogil:
+    cdef shared_ptr[vector[double]] get_prob_vec(RouteChoiceSetResults self, size_t i) noexcept nogil:
         return self.__prob_set[i] if self.store_results else make_shared[vector[double]]()
 
     cdef shared_ptr[vector[double]] compute_result(
         RouteChoiceSetResults self,
         size_t i,
         RouteVec_t &route_set,
+        bint *found_zero_cost,
         size_t thread_id
     ) noexcept nogil:
         """
@@ -202,15 +207,10 @@ cdef class RouteChoiceSetResults:
         cost_vec = self.__get_cost_set(i)
         route_mask = self.__get_mask_set(i)
         path_overlap_vec = self.__get_path_overlap_set(i)
-        prob_vec = self.__get_prob_set(i)
+        prob_vec = self.get_prob_vec(i)
 
-        self.compute_cost(d(cost_vec), route_set, self.cost_view)
-        if self.compute_mask(d(route_mask), d(cost_vec)):
-            with gil:
-                warnings.warn(
-                    f"Zero cost route found for ({self.demand.ods[i].first}, {self.demand.ods[i].second}). "
-                    "Entire route set masked"
-                )
+        self.compute_cost(d(cost_vec), route_set, self.cost_view, found_zero_cost)
+        self.compute_mask(d(route_mask), d(cost_vec))
         self.compute_frequency(keys, counts, route_set, d(route_mask))
         self.compute_path_overlap(
             d(path_overlap_vec),
@@ -234,7 +234,8 @@ cdef class RouteChoiceSetResults:
         vector[double] &cost_vec,
         const RouteVec_t &route_set,
         const double[:]
-        cost_view
+        cost_view,
+        bint *found_zero_cost
     ) noexcept nogil:
         """Compute the cost each route."""
         cdef:
@@ -245,18 +246,21 @@ cdef class RouteChoiceSetResults:
 
         cost_vec.resize(route_set.size())
 
+        found_zero_cost[0] = False
         for i in range(route_set.size()):
             cost = 0.0
             for link in d(route_set[i]):
                 cost = cost + cost_view[link]
 
             cost_vec[i] = cost
+            if cost == 0.0:
+                found_zero_cost[0] = True
 
     @cython.wraparound(False)
     @cython.embedsignature(True)
     @cython.boundscheck(False)
     @cython.initializedcheck(False)
-    cdef bool compute_mask(
+    cdef void compute_mask(
         RouteChoiceSetResults self,
         vector[bool] &route_mask,
         const vector[double] &total_cost
@@ -296,8 +300,6 @@ cdef class RouteChoiceSetResults:
             # Always include the min element. It should already be but I don't trust floating math to do this correctly.
             # But only if there actually was a min element (i.e. empty route set)
             route_mask[min - total_cost.cbegin()] = True
-
-        return found_zero_cost
 
     @cython.wraparound(False)
     @cython.embedsignature(True)
@@ -346,7 +348,7 @@ cdef class RouteChoiceSetResults:
         while union_iter != link_union.cend():
             count = 0
             link = d(union_iter)
-            while link == d(union_iter) and union_iter != link_union.cend():
+            while union_iter != link_union.cend() and link == d(union_iter):
                 count = count + 1
                 inc(union_iter)
 
@@ -490,17 +492,20 @@ cdef class RouteChoiceSetResults:
 
             int offset = 0
             size_t network_link_begin, network_link_end, link
+            bool have_assignment_results = self.perform_assignment and self.store_results
 
         # Origins, Destination, Route set, [Cost for route, Mask, Path_Overlap for route, Probability for route]
-        columns.resize(len(self.psl_schema) if self.perform_assignment else len(self.schema))
+        columns.resize(len(self.psl_schema) if have_assignment_results else len(self.schema))
 
-        if self.perform_assignment:
+        if have_assignment_results:
             cost_col = new CDoubleBuilder(pool)
             mask_col = new CBooleanBuilder(pool)
             path_overlap_col = new CDoubleBuilder(pool)
             prob_col = new CDoubleBuilder(pool)
 
             for i in range(self.demand.ods.size()):
+                if not d(self.__route_vecs[i]).size():  # If there's no routes to add just skip these.
+                    continue
                 cost_col.AppendValues(d(self.__cost_set[i]))
                 mask_col.AppendValues(d(self.__mask_set[i]))
                 path_overlap_col.AppendValues(d(self.__path_overlap_set[i]))
@@ -546,14 +551,14 @@ cdef class RouteChoiceSetResults:
         d_col.Finish(&columns[1])
         columns[2] = d(route_set_results)
 
-        if self.perform_assignment:
+        if have_assignment_results:
             cost_col.Finish(&columns[3])
             mask_col.Finish(&columns[4])
             path_overlap_col.Finish(&columns[5])
             prob_col.Finish(&columns[6])
 
         cdef shared_ptr[libpa.CSchema] schema = libpa.pyarrow_unwrap_schema(
-            self.psl_schema if self.perform_assignment else self.schema
+            self.psl_schema if have_assignment_results else self.schema
         )
         cdef shared_ptr[libpa.CTable] table = libpa.CTable.MakeFromArrays(schema, columns)
 
@@ -562,7 +567,7 @@ cdef class RouteChoiceSetResults:
         del o_col
         del d_col
 
-        if self.perform_assignment:
+        if have_assignment_results:
             del cost_col
             del mask_col
             del path_overlap_col
