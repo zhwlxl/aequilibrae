@@ -46,21 +46,6 @@ SF_EDGE_COLS = [
 ]
 
 
-def shift_duplicate_geometry(df, shift=0.00001):
-    """Shift stacked geometry by some fraction of ``shift`` vertically."""
-
-    def _shift_points(group_df, shift):
-        points = shapely.from_wkb(group_df.geometry.values)
-        count = len(points)
-        for i, x in enumerate(points):
-            points[i] = shapely.Point(x.x, x.y + (i + 1) * shift / count)
-
-        group_df.geometry = shapely.to_wkb(points)
-        return group_df
-
-    return df.groupby(by="geometry", group_keys=False).apply(_shift_points, shift)
-
-
 class TransitGraphBuilder:
     """Graph builder for the transit assignment Spiess & Florian algorithm.
 
@@ -75,11 +60,11 @@ class TransitGraphBuilder:
 
         **num_threads** (:obj:`int`): Number of threads to be used where possible. Defaults to ``-1``, using all available threads.
 
-        **seed** (:obj:`int`): Seed for ``self.rng``. Defaults to ``124``.
+        **seed** (:obj:`int`): Deprecated. No longer in use.
 
-        **geometry_noise** (:obj:`bool`): Whether to use noise in geometry creation, in order to avoid colocated nodes. Defaults to ``True``.
+        **geometry_noise** (:obj:`bool`): Deprecated. No longer in use.
 
-        **noise_coef** (:obj:`float`): Scaling factor of the noise. Defaults to ``1.0e-5``.
+        **noise_coef** (:obj:`float`): Deprecated. No longer in use.
 
         **with_inner_stop_transfers** (:obj:`bool`): Whether to create transfer edges within parent stations. Defaults to ``False``.
 
@@ -101,9 +86,9 @@ class TransitGraphBuilder:
         time_margin: int = 0,
         projected_crs: str = "EPSG:3857",
         num_threads: int = -1,
-        seed: int = 124,
-        geometry_noise: bool = True,
-        noise_coef: float = 1.0e-5,
+        seed: int = None,
+        geometry_noise: bool = None,
+        noise_coef: float = None,
         with_inner_stop_transfers: bool = False,
         with_outer_stop_transfers: bool = False,
         with_walking_edges: bool = True,
@@ -161,12 +146,12 @@ class TransitGraphBuilder:
             self.__projected_crs, self.__global_crs, always_xy=True
         ).transform
 
-        # Add some spatial noise so that stop, boarding and aligthing vertices
-        # are not colocated
-        self.seed = seed
-        self.rng = np.random.default_rng(seed=self.seed)
-        self.geometry_noise = geometry_noise
-        self.noise_coef = noise_coef
+        if seed is not None or geometry_noise is not None or noise_coef is not None:
+            warnings.warn(
+                "the 'seed', 'geometry_noise', and 'noise_coef' arguments are depreciated and no longer in use. "
+                "Duplicate geometries are allowed within the public transport database.",
+                DeprecationWarning,
+            )
 
         # graph parameters
         self.uniform_dwell_time = 30
@@ -188,9 +173,6 @@ class TransitGraphBuilder:
         self.__config_attrs = [
             "period_id",
             "projected_crs",
-            "seed",
-            "geometry_noise",
-            "noise_coef",
             # "uniform_dwell_time",
             # "alighting_penalty",
             # "a_tiny_time_duration",
@@ -456,7 +438,7 @@ class TransitGraphBuilder:
         self.__stop_vertices = stop_vertices
 
     def _create_boarding_vertices(self):
-        """Create boarding vertices with noise, if enabled."""
+        """Create boarding vertices."""
         boarding_vertices = self.__line_segments[["line_id", "seq", "from_stop"]].copy(deep=True)
         boarding_vertices.rename(columns={"seq": "line_seg_idx", "from_stop": "stop_id"}, inplace=True)
         boarding_vertices = pd.merge(
@@ -466,20 +448,10 @@ class TransitGraphBuilder:
         # uniform attributes
         boarding_vertices["node_type"] = "boarding"
 
-        # add noise
-        if self.geometry_noise:
-            boarding_vertices["x"] = boarding_vertices.geometry.map(lambda c: shapely.wkb.loads(c).x)
-            boarding_vertices["y"] = boarding_vertices.geometry.map(lambda c: shapely.wkb.loads(c).y)
-            n_boarding = len(boarding_vertices)
-            boarding_vertices["x"] += self.noise_coef * (self.rng.random(n_boarding) - 0.5)
-            boarding_vertices["y"] += self.noise_coef * (self.rng.random(n_boarding) - 0.5)
-            boarding_vertices["geometry"] = boarding_vertices.apply(lambda row: Point(row.x, row.y).wkb, axis=1)
-            boarding_vertices.drop(["x", "y"], axis=1, inplace=True)
-
         self.__boarding_vertices = boarding_vertices
 
     def _create_alighting_vertices(self):
-        """Create alighting vertices with noise, if enabled."""
+        """Create alighting vertices."""
         alighting_vertices = self.__line_segments[["line_id", "seq", "to_stop"]].copy(deep=True)
         alighting_vertices.rename(columns={"seq": "line_seg_idx", "to_stop": "stop_id"}, inplace=True)
         alighting_vertices = pd.merge(
@@ -488,16 +460,6 @@ class TransitGraphBuilder:
 
         # uniform attributes
         alighting_vertices["node_type"] = "alighting"
-
-        # add noise
-        if self.geometry_noise:
-            alighting_vertices["x"] = alighting_vertices.geometry.map(lambda c: shapely.wkb.loads(c).x)
-            alighting_vertices["y"] = alighting_vertices.geometry.map(lambda c: shapely.wkb.loads(c).y)
-            n_alighting = len(alighting_vertices)
-            alighting_vertices["x"] += self.noise_coef * (self.rng.random(n_alighting) - 0.5)
-            alighting_vertices["y"] += self.noise_coef * (self.rng.random(n_alighting) - 0.5)
-            alighting_vertices["geometry"] = alighting_vertices.apply(lambda row: Point(row.x, row.y).wkb, axis=1)
-            alighting_vertices.drop(["x", "y"], axis=1, inplace=True)
 
         self.__alighting_vertices = alighting_vertices
 
@@ -1091,6 +1053,9 @@ class TransitGraphBuilder:
 
             walking_edges["trav_time"] = distance / self.walking_speed
             walking_edges["trav_time"] *= self.walk_time_factor
+            walking_edges.loc[walking_edges["trav_time"] < self.a_tiny_time_duration, "trav_time"] = (
+                self.a_tiny_time_duration
+            )
 
             # cleanup
             walking_edges.drop(
@@ -1333,26 +1298,20 @@ class TransitGraphBuilder:
                 ],
             )
 
-    def save_vertices(self, robust=True):
+    def save_vertices(self, robust=None):
         """
         Write the vertices DataFrame to the public transport database.
 
         Within the database nodes may not exist at the exact same point in space, provide ``robust=True`` to move the nodes slightly.
 
         :Arguments:
-           **robust** (:obj:`bool`): Whether to move stack nodes slightly before saving. Defaults to ``True``.
+           **robust** (:obj:`bool`): Deprecated. No longer in use.
         """
-        duplicated = self.vertices.geometry.duplicated()
-
-        if not robust and duplicated.any():
+        if robust is not None:
             warnings.warn(
-                "Duplicated geometry was detected but robust was disabled, vertices that share the same geometry will not be saved.",
-                warnings.RuntimeWarning,
+                "the 'robust' argument is depreciated and no longer in use. Duplicate geometries are allowed within the public transport database.",
+                DeprecationWarning,
             )
-
-        if robust and duplicated.any():
-            df = shift_duplicate_geometry(self.vertices[["node_id", "geometry"]][duplicated])
-            self.vertices.loc[df.index, "geometry"] = df.geometry
 
         with self.pt_conn as conn:
             if conn.execute("SELECT node_id FROM nodes LIMIT 1;").fetchall():
@@ -1363,9 +1322,7 @@ class TransitGraphBuilder:
                 INSERT INTO nodes ({",".join(SF_VERTEX_COLS)},modes)
                 VALUES({",".join("?" * (len(SF_VERTEX_COLS) - 1))},GeomFromWKB(?, {self.__global_crs.to_epsg()}),"t");
                 """,
-                (self.vertices if robust else self.vertices[~duplicated])[SF_VERTEX_COLS].itertuples(
-                    index=False, name=None
-                ),
+                self.vertices[SF_VERTEX_COLS].itertuples(index=False, name=None),
             )
 
     @staticmethod
@@ -1447,10 +1404,8 @@ class TransitGraphBuilder:
     def save(self, robust=True):
         """Save the current graph to the public transport database.
 
-        Within the database nodes may not exist at the exact same point in space, provide ``robust=True`` to move the nodes slightly.
-
         :Arguments:
-            **robust** (:obj:`bool`): Whether to move stack nodes slightly before saving. Defaults to ``True``.
+            **robust** (:obj:`bool`): Deprecated. No longer in use.
         """
         self.create_additional_db_fields()
         self.save_vertices(robust=robust)
