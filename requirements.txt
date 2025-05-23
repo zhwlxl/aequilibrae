@@ -7,7 +7,7 @@ shapely
 pandas
 pyproj
 rtree
+pyarrow
 openmatrix
-pyarrow==17.0.0
 geopandas
 tqdm
