@@ -13,7 +13,7 @@ from aequilibrae.log import Log
 from aequilibrae.log import get_log_handler
 from aequilibrae.parameters import Parameters
 from aequilibrae.project.about import About
-from aequilibrae.project.data import Matrices
+from aequilibrae.project.data import Matrices, Results
 from aequilibrae.project.network import Network
 from aequilibrae.project.project_cleaning import clean
 from aequilibrae.project.project_creation import initialize_tables
@@ -53,7 +53,7 @@ class Project:
 
     @classmethod
     def from_path(cls, project_folder):
-        project = Project()
+        project = cls()
         project.open(project_folder)
         return project
 
@@ -83,6 +83,22 @@ class Project:
     @contextmanager
     def db_connection(self):
         with commit_and_close(self.path_to_file, spatial=True) as conn:
+            yield conn
+
+    @property
+    @contextmanager
+    def results_connection(self):
+        with commit_and_close(
+            self.project_base_path / "results_database.sqlite", spatial=False, missing_ok=True
+        ) as conn:
+            yield conn
+
+    @property
+    @contextmanager
+    def transit_connection(self):
+        with commit_and_close(
+            self.project_base_path / "public_transport.sqlite", spatial=True, missing_ok=True
+        ) as conn:
             yield conn
 
     def new(self, project_path: str) -> None:
@@ -157,25 +173,33 @@ class Project:
         directly. Consult it's documentation page for details. Take care when skipping migrations.
         """
         global_logger.info("Starting database upgrades")
+        connections = {
+            "project_conn": database_connection("project"),
+            "transit_conn": None,
+            "results_conn": None,
+        }
         targets = [
-            (MigrationManager(MigrationManager.network_migration_file), database_connection("project")),
+            (MigrationManager(MigrationManager.network_migration_file), "project_conn"),
         ]
 
         if (self.project_base_path / "public_transport.sqlite").exists():
-            targets.append((MigrationManager(MigrationManager.transit_migration_file), database_connection("transit")))
+            targets.append((MigrationManager(MigrationManager.transit_migration_file), "transit_conn"))
+            connections["transit_conn"] = database_connection("transit")
+
+        if (self.project_base_path / "results_database.sqlite").exists():
+            connections["results_conn"] = database_connection("results")
 
         try:
-            for mm, conn in targets:
-                with conn:
+            for mm, main_conn in targets:
+                with connections[main_conn] as conn:
                     mm.mark_all_as_seen(conn)
 
-            for mm, conn in targets:
-                with conn:
-                    mm.upgrade(conn)
+            for mm, main_conn in targets:
+                mm.upgrade(main_conn, connections=connections)
             global_logger.info("Completed database upgrades")
         finally:
-            for _, conn in targets:
-                conn.close()
+            for _, main_conn in targets:
+                connections[main_conn].close()
 
     def __load_objects(self):
         matrix_folder = self.project_base_path / "matrices"
@@ -184,6 +208,7 @@ class Project:
         self.network = Network(self)
         self.about = About(self)
         self.matrices = Matrices(self)
+        self.results = Results(self)
 
     @property
     def project_parameters(self) -> Parameters:
