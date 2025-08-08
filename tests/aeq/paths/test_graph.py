@@ -19,6 +19,15 @@ def graph_for_project(project):
     return project.network.graphs["c"]
 
 
+def test_upper_case_variables(sioux_falls_example):
+    graph = graph_for_project(sioux_falls_example)
+    network = graph.network
+    network.columns = network.columns.str.upper()
+    g = Graph()
+    g.network = network
+    assert g.network.columns.tolist() == graph.network.columns.tolist(), "Graph columns are not lower case"
+
+
 def test_prepare_graph(sioux_falls_example):
     graph = graph_for_project(sioux_falls_example)
     graph.prepare_graph(np.arange(5) + 1)
