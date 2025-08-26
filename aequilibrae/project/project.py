@@ -7,6 +7,8 @@ from collections import namedtuple
 from contextlib import contextmanager
 from pathlib import Path
 
+import pandas as pd
+
 from aequilibrae import global_logger
 from aequilibrae.context import activate_project, get_active_project
 from aequilibrae.log import Log
@@ -17,13 +19,14 @@ from aequilibrae.project.data import Matrices, Results
 from aequilibrae.project.network import Network
 from aequilibrae.project.project_cleaning import clean
 from aequilibrae.project.project_creation import initialize_tables
+from aequilibrae.project.scenario import Scenario
 from aequilibrae.project.tools import MigrationManager
 from aequilibrae.project.zoning import Zoning
 from aequilibrae.reference_files import spatialite_database, demo_init_py
 from aequilibrae.transit import Transit
 from aequilibrae.utils.db_utils import commit_and_close, safe_connect
 from aequilibrae.utils.model_run_utils import import_file_as_module
-from aequilibrae.utils.spatialite_utils import connect_spatialite, load_spatialite_extension
+from aequilibrae.utils.spatialite_utils import connect_spatialite
 
 
 class Project:
@@ -48,7 +51,8 @@ class Project:
     """
 
     def __init__(self):
-        pass
+        self.root_scenario: Scenario = None
+        self.scenario: Scenario = None
 
     @classmethod
     def from_path(cls, project_folder):
@@ -71,8 +75,14 @@ class Project:
         if not file_name.is_file() or not file_name.exists():
             raise FileNotFoundError("Model does not exist. Check your path and try again")
 
-        self.__base_path = base_path
-        self.__logger = self.__setup_logger()
+        path_to_file = file_name
+
+        self.root_scenario = Scenario(
+            base_path=base_path,
+            path_to_file=path_to_file,
+        )
+        self.scenario = self.root_scenario
+        self.scenario.logger = self.__setup_logger()
 
         self.activate()
 
@@ -82,35 +92,35 @@ class Project:
 
     @property
     def project_base_path(self):
-        return self.__base_path
+        return self.scenario.base_path
 
     @property
     def path_to_file(self):
-        return self._project_database_path
+        return self.scenario.path_to_file
 
     @property
     def about(self) -> About:
-        return self.__about
+        return self.scenario.about
 
     @property
     def logger(self) -> logging.Logger:
-        return self.__logger
+        return self.scenario.logger
 
     @property
     def network(self) -> Network:
-        return self.__network
+        return self.scenario.network
 
     @property
     def transit(self) -> Transit:
-        return self.__transit
+        return self.scenario.transit
 
     @property
     def matrices(self) -> Matrices:
-        return self.__matrices
+        return self.scenario.matrices
 
     @property
     def results(self) -> Results:
-        return self.__results
+        return self.scenario.results
 
     @property
     def _project_database_path(self) -> Path:
@@ -156,6 +166,7 @@ class Project:
         """
 
         base_path = Path(project_path)
+        path_to_file = base_path / "project_database.sqlite"
 
         if os.path.isdir(project_path):
             raise FileExistsError("Location already exists. Choose a different name or remove the existing directory")
@@ -163,8 +174,12 @@ class Project:
         # We create the project folder and create the base file
         base_path.mkdir(parents=True, exist_ok=True)
 
-        self.__base_path = base_path
-        self.__logger = self.__setup_logger()
+        self.root_scenario = Scenario(
+            base_path=base_path,
+            path_to_file=path_to_file,
+        )
+        self.scenario = self.root_scenario
+        self.scenario.logger = self.__setup_logger()
         self.activate()
 
         self.__create_empty_network()
@@ -256,10 +271,10 @@ class Project:
         matrix_folder = self.project_base_path / "matrices"
         matrix_folder.mkdir(parents=True, exist_ok=True)
 
-        self.__network = Network(self)
-        self.__about = About(self)
-        self.__matrices = Matrices(self)
-        self.__results = Results(self)
+        self.scenario.network = Network(self)
+        self.scenario.about = About(self)
+        self.scenario.matrices = Matrices(self)
+        self.scenario.results = Results(self)
 
     @property
     def project_parameters(self) -> Parameters:
@@ -331,3 +346,90 @@ class Project:
             logger.addHandler(get_log_handler(self.project_base_path / "aequilibrae.log"))
 
         return logger
+
+    def list_scenarios(self):
+        with self.db_connection as conn:
+            return pd.read_sql("SELECT * FROM scenarios", conn)
+
+    def use_scenario(self, scenario_name: str):
+        if scenario_name == "root":
+            self.scenario = self.root_scenario
+        else:
+            self.scenario = Scenario(
+                base_path=self.root_scenario.base_path / "scenarios" / scenario_name,
+                path_to_file=self.root_scenario.base_path / "scenarios" / scenario_name / "project_database.sqlite",
+            )
+            self.scenario.logger = self.__setup_logger()
+            self.__load_objects()
+
+    def create_empty_scenario(self, scenario_name: str, description: str = ""):
+        scenario_path = self.root_scenario.base_path / "scenarios" / scenario_name
+
+        if scenario_path.exists():
+            raise FileExistsError(f"a file or directory of the name ({scenario_name}) already exists")
+        else:
+            with self.db_connection as conn:
+                if (
+                    conn.execute("SELECT 1 FROM scenarios where scenario_name=?", (scenario_name,)).fetchone()
+                    is not None
+                ):
+                    raise ValueError("a scenario of that name already exists")
+
+        scenario_path.mkdir(parents=True, exist_ok=True)
+
+        db = scenario_path / "project_database.sqlite"
+        shutil.copyfile(spatialite_database, db)
+
+        # Write parameters to the project folder
+        p = Parameters(path=scenario_path)
+        p.parameters["system"]["logging_directory"] = str(scenario_path)
+        p.write_back()
+
+        # Create actual tables
+        with commit_and_close(db, spatial=True) as conn:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            initialize_tables(self.logger, "network", conn=conn)
+            conn.execute("DROP TABLE IF EXISTS scenarios")
+
+        with self.db_connection as conn:
+            conn.execute("INSERT INTO scenarios (scenario_name, description) VALUES(?,?)", (scenario_name, description))
+
+    def clone_scenario(self, scenario_name: str, description: str = ""):
+        scenario_path = self.root_scenario.base_path / "scenarios" / scenario_name
+
+        if scenario_path.exists():
+            raise FileExistsError(f"a file or directory of the name ({scenario_name}) already exists")
+        else:
+            with self.db_connection as conn:
+                if (
+                    conn.execute("SELECT 1 FROM scenarios where scenario_name=?", (scenario_name,)).fetchone()
+                    is not None
+                ):
+                    raise ValueError("a scenario of that name already exists")
+
+        shutil.copytree(self.project_base_path / "matrices", scenario_path / "matrices")
+
+        db = scenario_path / "project_database.sqlite"
+        shutil.copyfile(self.path_to_file, db)
+
+        try:
+            shutil.copyfile(
+                self.project_base_path / "public_transport.sqlite", scenario_path / "public_transport.sqlite"
+            )
+        except FileNotFoundError:
+            pass
+
+        try:
+            shutil.copyfile(
+                self.project_base_path / "results_database.sqlite", scenario_path / "results_database.sqlite"
+            )
+        except FileNotFoundError:
+            pass
+
+        shutil.copy(self.project_parameters.file, scenario_path)
+
+        with commit_and_close(db, spatial=True) as conn:
+            conn.execute("DROP TABLE IF EXISTS scenarios")
+
+        with self.db_connection as conn:
+            conn.execute("INSERT INTO scenarios (scenario_name, description) VALUES(?,?)", (scenario_name, description))
