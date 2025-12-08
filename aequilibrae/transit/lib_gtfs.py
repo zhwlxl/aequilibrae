@@ -7,7 +7,8 @@ import pyproj
 from pyproj import Transformer
 from shapely.geometry import Point, MultiLineString
 
-from aequilibrae.context import get_active_project, get_logger
+from aequilibrae.log import logger
+from aequilibrae.context import get_active_project
 from aequilibrae.transit.constants import Constants, PATTERN_ID_MULTIPLIER
 from aequilibrae.transit.functions.get_srid import get_srid
 from aequilibrae.transit.transit_elements import Link, Pattern, mode_correspondence
@@ -43,7 +44,7 @@ class GTFSRouteSystemBuilder(WorkerThread):
         self.project = get_active_project(False)
         self.archive_dir = None  # type: str
         self.day = day
-        self.logger = get_logger()
+        self.logger = logger
         with self.project.transit_connection as conn:
             self.gtfs_data = GTFSReader(conn)
         self.srid = get_srid()
@@ -126,7 +127,7 @@ class GTFSRouteSystemBuilder(WorkerThread):
 
         self.__do_execute_map_matching = allow
 
-    def map_match(self, route_types=[3]) -> None:  # noqa: B006
+    def map_match(self, route_types=(3,)) -> None:
         """Performs map-matching for all routes of one or more types.
 
         Defaults to map-matching Bus routes (type 3) only.
@@ -135,13 +136,24 @@ class GTFSRouteSystemBuilder(WorkerThread):
         `route_type here <https://gtfs.org/documentation/schedule/reference/#routestxt>`_.
 
         :Arguments:
-            **route_types** (:obj:`List[int]` or :obj:`Tuple[int]`): Default is [3], for bus only
+            **route_types** (:obj:`List[int]` or :obj:`Tuple[int]`): Default is ``(3,)``, for bus only
         """
         if not isinstance(route_types, list) and not isinstance(route_types, tuple):
             raise TypeError("Route_types must be list or tuple")
 
         if any(not isinstance(item, int) for item in route_types):
             raise TypeError("All route types must be integers")
+
+        if any(e not in mode_correspondence for e in route_types):
+            missing_route_types = [e for e in route_types if e not in mode_correspondence]
+            self.logger.warning(
+                f"Skipping the following route_types as they have no corresponding road mode: {missing_route_types}"
+            )
+            route_types = [e for e in route_types if e in mode_correspondence]
+
+            if not route_types:
+                self.logger.warning("No valid route_types remain after filtering")
+                return
 
         for pat in simple_progress(self.select_patterns.values(), self.signal, "Map-matching patterns"):
             if pat.route_type in route_types:
