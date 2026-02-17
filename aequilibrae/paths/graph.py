@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from aequilibrae.context import get_logger
-from aequilibrae.paths.graph_building import build_compressed_graph, create_compressed_link_network_mapping
+from aequilibrae.paths.cython.graph_building import build_compressed_graph, create_compressed_link_network_mapping
 
 
 @dataclasses.dataclass
@@ -236,7 +236,8 @@ class GraphBase(ABC):  # noqa: B024
         not_pos = pd.DataFrame(not_pos, copy=True)[neg_names]
         not_pos.columns = names
 
-        # Swap the a and b nodes of these edges. Direction is used for mapping the graph.graph back to the network. It does not indicate the direction of the link.
+        # Swap the a and b nodes of these edges. Direction is used for mapping the graph.graph back
+        # to the network. It does not indicate the direction of the link.
         not_pos.loc[:, "direction"] = -1
         aux = np.array(not_pos.a_node.values, copy=True)
         not_pos.loc[:, "a_node"] = not_pos.loc[:, "b_node"]
@@ -259,7 +260,9 @@ class GraphBase(ABC):  # noqa: B024
         nodes = np.unique(np.hstack((df.a_node.values, df.b_node.values))).astype(self.__integer_type)
         present_centroids = np.isin(centroids, nodes, assume_unique=True)
         if not present_centroids.all():
-            warnings.warn("Found centroids not present in the graph!\n" + str(centroids[~present_centroids]))
+            warnings.warn(
+                "Found centroids not present in the graph!\n" + str(centroids[~present_centroids]), stacklevel=2
+            )
         nodes = np.setdiff1d(nodes, centroids, assume_unique=True)
         all_nodes = np.hstack((centroids, nodes)).astype(self.__integer_type)
 
@@ -295,12 +298,12 @@ class GraphBase(ABC):  # noqa: B024
         return all_nodes, num_nodes, nodes_to_indices, fs, df
 
     def compute_path(
-            self,
-            origin: int,
-            destination: int,
-            early_exit: bool = False,
-            a_star: bool = False,
-            heuristic: Union[str, None] = None,
+        self,
+        origin: int,
+        destination: int,
+        early_exit: bool = False,
+        a_star: bool = False,
+        heuristic: Union[str, None] = None,
     ):
         """
         Returns the results from path computation result holder.

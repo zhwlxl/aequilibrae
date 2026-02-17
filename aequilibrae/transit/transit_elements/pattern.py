@@ -87,8 +87,11 @@ class Pattern(BasicPTElement):
             self.__srid,
         ]
 
-        sql = """insert into routes (pattern_id, route_id, route, agency_id, shortname, longname, description, route_type, pce,
-                         seated_capacity, total_capacity, geometry) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ST_Multi(GeomFromWKB(?, ?)));"""
+        sql = (
+            "insert into routes (pattern_id, route_id, route, agency_id, shortname, longname, "
+            "description, route_type, pce, seated_capacity, total_capacity, geometry) values "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ST_Multi(GeomFromWKB(?, ?)));"
+        )
         conn.execute(sql, data)
 
         if self.pattern_mapping.shape[0]:
@@ -142,8 +145,9 @@ class Pattern(BasicPTElement):
         if self.route_type not in mode_corresp or mode_corresp[self.route_type] not in self.__feed.map_matchers:
             return
 
-        df = pd.DataFrame({"stop_id": [stop.stop_id for stop in self.stops],
-                           "geometry": [stop.geo for stop in self.stops]})
+        df = pd.DataFrame(
+            {"stop_id": [stop.stop_id for stop in self.stops], "geometry": [stop.geo for stop in self.stops]}
+        )
         map_matcher = self.__feed.map_matchers[mode_corresp[self.route_type]]  # type: RouteMapMatcher
 
         stops = gpd.GeoDataFrame(df, geometry="geometry", crs=f"EPSG:{self.__srid}").to_crs(map_matcher.crs)

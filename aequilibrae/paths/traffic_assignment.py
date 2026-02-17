@@ -19,7 +19,6 @@ from aequilibrae.paths.optimal_strategies import OptimalStrategies
 from aequilibrae.paths.traffic_class import TrafficClass, TransportClassBase
 from aequilibrae.paths.vdf import VDF, all_vdf_functions
 from aequilibrae.utils.core_setter import set_cores
-from aequilibrae.utils.db_utils import commit_and_close
 
 
 def _assign_aggregation_fields(
@@ -396,9 +395,9 @@ class TrafficAssignment(AssignmentBase):
         Parameter values can be scalars (same values for the entire network) or network field names
         (link-specific values) - Examples: {'alpha': 0.15, 'beta': 4.0} or  {'alpha': 'alpha', 'beta': 'beta'}
 
-        The Akcelik VDF parameter 'tau' value has typical ``8`` factor absorbed into it. Users should supply ``8 * tau``
-        to match other common usages. Additionally the standard ``0.25`` factor can be overridden by supplying the 'alpha'
-        parameter.
+        The Akcelik VDF parameter 'tau' value has typical ``8`` factor absorbed into it.
+        Users should supply ``8 * tau`` to match other common usages. Additionally the standard
+        ``0.25`` factor can be overridden by supplying the 'alpha' parameter.
 
         :Arguments:
             **par** (:obj:`dict`): Dictionary with all parameters for the chosen VDF
@@ -806,14 +805,14 @@ class TrafficAssignment(AssignmentBase):
         :Arguments:
             **name** (:obj:`str`): Name of the matrix record to hold this matrix (same name used for file name)
 
-            **which_ones** (:obj:`str`, *Optional*): {'final': Results of the final iteration, 'blended': Averaged results
-            for all iterations, 'all': Saves skims for both the final iteration and the blended ones}.
-            Default is 'final'
+            **which_ones** (:obj:`str`, *Optional*): 'final': Results of the final iteration,
+                'blended': Averaged results for all iterations, 'all': Saves skims for both the final iteration and the
+                blended ones. Default is 'final'
 
             **format** (:obj:`str`, *Optional*): File format ('aem' or 'omx'). Default is 'omx'
 
             **project** (:obj:`Project`, *Optional*): Project we want to save the results to.
-            Defaults to the active project
+                Defaults to the active project
         """
         mat_format = format.lower()
         if mat_format not in ["omx", "aem"]:

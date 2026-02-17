@@ -7,13 +7,11 @@ from typing import Dict
 
 import numpy as np
 import pandas as pd
-import pyproj
 from pyproj import Transformer
 from shapely.geometry import LineString
 
 from aequilibrae.context import get_logger
 from aequilibrae.transit.column_order import column_order
-from aequilibrae.transit.constants import AGENCY_MULTIPLIER
 from aequilibrae.transit.date_tools import to_seconds, create_days_between, format_date
 from aequilibrae.transit.functions.get_srid import get_srid
 from aequilibrae.transit.parse_csv import parse_csv
@@ -464,7 +462,7 @@ class GTFSReader(WorkerThread):
         for route_type, pce in self.__pces__.items():
             routes.loc[routes.route_type == route_type, ["pce"]] = pce
 
-        for i, line in simple_progress(routes.iterrows(), self.signal, "Loading routes (Step: 1/12)"):
+        for _i, line in simple_progress(routes.iterrows(), self.signal, "Loading routes (Step: 1/12)"):
             r = Route(self.agency.agency_id)
             r.populate(line.values, routes.columns)
             self.routes[r.route] = r
