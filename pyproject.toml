@@ -81,6 +81,10 @@ build = ["setuptools", "cython", "wheel"]
 
 dev = ['aequilibrae[build, tests, docs]']
 
+# simwrapper CLI
+[project.scripts]
+aeq-sim = "aequilibrae.utils.simwrapper.generate_simwrapper_config:main"
+
 [tool.setuptools.dynamic]
 version = { attr = "aequilibrae.version" }
 
@@ -142,7 +146,6 @@ exclude = [
     ".venv312",
 ]
 line-length = 120
-lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 target-version = "py310"
 
 [tool.ruff.lint.mccabe]
